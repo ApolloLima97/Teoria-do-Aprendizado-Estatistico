@@ -102,7 +102,8 @@ def gerar_histograma_duracao(df: pd.DataFrame):
 
 
 def main():
-    caminho = sys.argv[1] if len(sys.argv) > 1 else r"C:\Users\a.lima\OneDrive - Purcom Quimica Ltda\Área de Trabalho\Trabalho Fatec\netflix_titles.csv"
+    # Sem argumento, usa o netflix_titles.csv da mesma pasta do script
+    caminho = sys.argv[1] if len(sys.argv) > 1 else CAMINHO_DATASET
     # Tamanho do dataset simulado via bootstrap (pode ajustar esse valor)
     tamanho_bootstrap = int(sys.argv[2]) if len(sys.argv) > 2 else 5000
 

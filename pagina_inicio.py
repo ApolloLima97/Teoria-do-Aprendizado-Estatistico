@@ -6,7 +6,7 @@ dados = carregar_dados()
 
 st.title("FATEC COTIA")
 st.header("Curso de Ciencia de Dados")
-st.write("Teoria do Aprendizado Estatistico - Bootstrap e SVM")
+st.write("Teoria do Aprendizado Estatistico - Bootstrap, SVM e K-means")
 st.write("Alunos: Deyvis Pires de Oliveira e Apolinario Dario de Lima")
 
 col1, col2, col3 = st.columns(3)

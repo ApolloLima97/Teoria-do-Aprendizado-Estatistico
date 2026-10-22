@@ -1,7 +1,10 @@
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
+import plotly.express as px
 import streamlit as st
 from sklearn.cluster import KMeans
+from sklearn.decomposition import PCA
 
 from kmeans import (achar_cotovelo, coeficiente_silhueta, estatistica_gap, gerar_grafico_cotovelo,
                     gerar_grafico_gap, melhor_k_gap, metodo_cotovelo, preparar_matriz)
@@ -113,6 +116,52 @@ if len(variaveis) >= 2:
     ax4.legend()
     plt.tight_layout()
     st.pyplot(fig4)
+
+st.subheader("Dispersao 3D")
+if len(variaveis) < 3:
+    st.warning("Escolha pelo menos tres variaveis na barra lateral para ver o grafico 3D.")
+else:
+    modo = st.radio("Eixos do grafico", ["Componentes principais (PCA)", "Variaveis originais"],
+                    horizontal=True)
+    amostra3d = resumo.sample(min(3000, len(resumo)), random_state=42)
+
+    if modo == "Variaveis originais":
+        c1, c2, c3 = st.columns(3)
+        ex = c1.selectbox("Eixo X ", variaveis, index=0)
+        ey = c2.selectbox("Eixo Y ", variaveis, index=1)
+        ez = c3.selectbox("Eixo Z", variaveis, index=min(3, len(variaveis) - 1))
+        if len({ex, ey, ez}) < 3:
+            st.warning("Escolha tres variaveis diferentes.")
+            ex, ey, ez = variaveis[:3]
+        # Pequeno deslocamento aleatorio: as variaveis sao inteiras e os pontos ficariam empilhados
+        ruido = np.random.default_rng(42).uniform(-0.25, 0.25, size=(len(amostra3d), 3))
+        pontos3d = pd.DataFrame({
+            ex: amostra3d[ex].values + ruido[:, 0],
+            ey: amostra3d[ey].values + ruido[:, 1],
+            ez: amostra3d[ez].values + ruido[:, 2],
+        })
+        eixos = [ex, ey, ez]
+    else:
+        # PCA resume todas as variaveis escolhidas em 3 eixos que explicam a maior parte da variacao
+        pca = PCA(n_components=3, random_state=42).fit(Xp)
+        componentes = pca.transform(Xp[resumo.index.get_indexer(amostra3d.index)])
+        explicada = pca.explained_variance_ratio_
+        eixos = [f"PC{i + 1} ({explicada[i]:.0%})" for i in range(3)]
+        pontos3d = pd.DataFrame(componentes, columns=eixos)
+        st.caption(f"Os 3 componentes explicam {explicada.sum():.0%} da variacao dos dados.")
+
+    pontos3d["Grupo"] = "Grupo " + amostra3d["grupo"].astype(str).values
+    pontos3d["Tipo"] = amostra3d["tipo"].values
+    fig5 = px.scatter_3d(
+        pontos3d, x=eixos[0], y=eixos[1], z=eixos[2], color="Grupo", hover_data=["Tipo"],
+        opacity=0.7, height=650,
+        category_orders={"Grupo": [f"Grupo {g}" for g in range(k_final)]},
+        color_discrete_sequence=px.colors.qualitative.T10,
+    )
+    fig5.update_traces(marker_size=3)
+    fig5.update_layout(margin=dict(l=0, r=0, t=10, b=0), legend_itemsizing="constant")
+    st.plotly_chart(fig5)
+    st.caption("Arraste para girar, use a roda do mouse para zoom e clique na legenda para esconder grupos.")
 
 st.write(
     f"Com as variaveis escolhidas, o cotovelo sugere k = {k_cotovelo}, a estatistica gap sugere "

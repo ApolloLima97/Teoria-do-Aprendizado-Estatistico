@@ -129,20 +129,97 @@ k_final = st.select_slider("k usado no agrupamento", options=list(range(2, k_max
 @st.cache_data
 def agrupar(variaveis, k):
     Xp, _ = preparar_matriz(dados, variaveis)
-    return KMeans(n_clusters=k, n_init=10, random_state=42).fit_predict(Xp)
+    modelo = KMeans(n_clusters=k, n_init=10, random_state=42).fit(Xp)
+    # Distancia de cada titulo ate o centro do seu grupo (usada para achar os exemplos mais tipicos)
+    distancia = modelo.transform(Xp)[np.arange(len(Xp)), modelo.labels_]
+    return modelo.labels_, distancia
 
 
-grupos = agrupar(tuple(variaveis), k_final)
+# Frase usada quando a media do grupo fica bem acima (+) ou bem abaixo (-) da media geral
+CARACTERISTICAS = {
+    "ano_lancamento": ("lancamentos recentes", "titulos antigos (classicos)"),
+    "ano_adicionado": ("entraram recentemente na Netflix", "entraram cedo na Netflix"),
+    "tem_diretor": ("com diretor cadastrado", "sem diretor cadastrado"),
+    "qtd_elenco": ("elenco grande", "elenco pequeno"),
+    "qtd_paises": ("coproducoes de varios paises", "sem pais informado"),
+    "qtd_generos": ("varios generos", "um so genero"),
+}
+
+
+def nomear_grupos(resumo, variaveis):
+    """Da um nome a cada grupo comparando a media dele com a media geral.
+
+    Para cada variavel calcula quantos desvios-padrao a media do grupo esta acima ou abaixo
+    da media de todos os titulos. As 1 ou 2 variaveis que mais se destacam (>= 0,4 desvio)
+    viram o nome. O tipo (Filme/Serie) vem da maioria dos titulos do grupo.
+    """
+    desvio = (resumo.groupby("grupo")[variaveis].mean() - resumo[variaveis].mean()) / resumo[variaveis].std()
+    nomes = {}
+    for g, linha in desvio.iterrows():
+        series = (resumo.loc[resumo["grupo"] == g, "tipo"] == "Serie").mean() >= 0.5
+        base = "Series" if series else "Filmes"
+        partes = []
+        for v in linha.abs().sort_values(ascending=False).index:
+            # "sem diretor" ja e o normal das series e "com diretor" o normal dos filmes
+            if v == "tem_diretor" and (linha[v] < 0) == series:
+                continue
+            if abs(linha[v]) >= 0.4 and len(partes) < 2:
+                partes.append(CARACTERISTICAS[v][0 if linha[v] > 0 else 1])
+        nomes[g] = f"Grupo {g}: {base}" + (" - " + " e ".join(partes) if partes else (" tipicas" if series else " tipicos"))
+    return nomes, desvio
+
+
+grupos, distancia = agrupar(tuple(variaveis), k_final)
 resumo = X.assign(grupo=grupos, tipo=y.loc[X.index].map({"Movie": "Filme", "TV Show": "Serie"}),
-                  titulo=dados.loc[X.index, "title"])
-NOMES_GRUPOS = [f"Grupo {g}" for g in range(k_final)]
+                  titulo=dados.loc[X.index, "title"], distancia=distancia)
+nomes_grupos, desvio = nomear_grupos(resumo, variaveis)
+NOMES_GRUPOS = [nomes_grupos[g] for g in range(k_final)]
+CORES = px.colors.qualitative.T10
 
-perfil = resumo.groupby("grupo")[variaveis].mean().round(2)
-perfil.insert(0, "Titulos no grupo", resumo["grupo"].value_counts().sort_index())
-perfil["% que sao series"] = (resumo.groupby("grupo")["tipo"].apply(lambda t: (t == "Serie").mean()) * 100).round(1)
-perfil.index = NOMES_GRUPOS
-st.write("Media de cada variavel por grupo (o perfil de cada grupo):")
-st.dataframe(perfil.rename(columns=NOMES))
+st.write(
+    "O K-means so numera os grupos (0, 1, 2...): ele nao sabe o que cada um significa. "
+    "O nome de cada grupo abaixo foi dado comparando a media do grupo com a media de todos os titulos: "
+    "entram no nome as caracteristicas em que o grupo mais se diferencia. Os exemplos sao os titulos "
+    "mais proximos do centro do grupo, ou seja, os mais tipicos dele."
+)
+
+colunas = st.columns(min(k_final, 3))
+for g in range(k_final):
+    do_grupo = resumo[resumo["grupo"] == g]
+    with colunas[g % len(colunas)].container(border=True):
+        st.markdown(
+            f"<span style='color:{CORES[g % len(CORES)]}; font-size:1.4em'>&#9679;</span> "
+            f"**{nomes_grupos[g]}**", unsafe_allow_html=True)
+        st.caption(f"{len(do_grupo)} titulos ({len(do_grupo) / len(resumo):.0%} do total) - "
+                   f"{(do_grupo['tipo'] == 'Serie').mean():.0%} sao series")
+        principais = desvio.loc[g].abs().sort_values(ascending=False).index[:3]
+        linhas = []
+        for v in principais:
+            seta = "acima" if desvio.loc[g, v] > 0 else "abaixo"
+            linhas.append(f"- {NOMES[v]}: **{do_grupo[v].mean():.1f}** "
+                          f"(media geral {resumo[v].mean():.1f}, {seta})")
+        st.markdown("\n".join(linhas))
+        exemplos = do_grupo.nsmallest(4, "distancia")
+        st.markdown("Exemplos: " + "; ".join(
+            f"*{t}* ({tipo})" for t, tipo in zip(exemplos["titulo"], exemplos["tipo"])))
+
+with st.expander("Tabela com a media de cada variavel por grupo"):
+    perfil = resumo.groupby("grupo")[variaveis].mean().round(2)
+    perfil.insert(0, "Titulos no grupo", resumo["grupo"].value_counts().sort_index())
+    perfil["% que sao series"] = (resumo.groupby("grupo")["tipo"].apply(lambda t: (t == "Serie").mean()) * 100).round(1)
+    perfil.index = NOMES_GRUPOS
+    geral = resumo[variaveis].mean().round(2).to_frame("Todos os titulos").T
+    geral.insert(0, "Titulos no grupo", len(resumo))
+    geral["% que sao series"] = round((resumo["tipo"] == "Serie").mean() * 100, 1)
+    st.dataframe(pd.concat([perfil, geral]).rename(columns=NOMES))
+
+st.markdown("##### Ver os titulos de um grupo")
+escolhido = st.selectbox("Grupo", NOMES_GRUPOS)
+g_escolhido = NOMES_GRUPOS.index(escolhido)
+lista = (resumo[resumo["grupo"] == g_escolhido].sort_values("distancia")
+         [["titulo", "tipo"] + variaveis].rename(columns={"titulo": "Titulo", "tipo": "Tipo"} | NOMES))
+st.dataframe(lista, hide_index=True, height=250)
+st.caption("Ordenados do mais tipico (mais perto do centro do grupo) para o menos tipico.")
 
 
 def tabela_pontos(amostra):
@@ -150,7 +227,7 @@ def tabela_pontos(amostra):
     tabela = pd.DataFrame({
         "Titulo": amostra["titulo"].values,
         "Tipo": amostra["tipo"].values,
-        "Grupo": "Grupo " + amostra["grupo"].astype(str).values,
+        "Grupo": amostra["grupo"].map(nomes_grupos).values,
     })
     for v in variaveis:
         tabela[NOMES[v]] = amostra[v].values
@@ -170,7 +247,7 @@ def grafico_dispersao(tabela, eixos, titulos_eixos, altura):
         hover_name="Titulo", hover_data={c: True for c in ["Tipo"] + [NOMES[v] for v in variaveis]}
         | {e: False for e in eixos},
         category_orders={"Grupo": NOMES_GRUPOS},
-        color_discrete_sequence=px.colors.qualitative.T10,
+        color_discrete_sequence=CORES,
     )
     if len(eixos) == 3:
         fig.update_traces(marker_size=3)
@@ -181,7 +258,8 @@ def grafico_dispersao(tabela, eixos, titulos_eixos, altura):
         fig.update_traces(marker_size=6)
         fig.update_layout(xaxis_title=titulos_eixos[0], yaxis_title=titulos_eixos[1])
     fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), legend_itemsizing="constant",
-                      legend_title_text="Grupo (K-means)")
+                      legend_title_text="", legend=dict(orientation="h", yanchor="top", y=-0.05,
+                                                        xanchor="left", x=0))
     return fig
 
 

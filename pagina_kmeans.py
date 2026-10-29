@@ -13,12 +13,51 @@ from svm import carregar_dados, preparar_dados
 dados = carregar_dados()
 X_completo, y = preparar_dados(dados)
 
+# Nome legivel de cada variavel (usado nos eixos, tabelas e legendas)
+NOMES = {
+    "ano_lancamento": "Ano de lancamento",
+    "ano_adicionado": "Ano em que entrou na Netflix",
+    "tem_diretor": "Tem diretor cadastrado (0 = nao, 1 = sim)",
+    "qtd_elenco": "Quantidade de atores no elenco",
+    "qtd_paises": "Quantidade de paises de producao",
+    "qtd_generos": "Quantidade de generos",
+}
+# Versao curta, usada para descrever os eixos do PCA
+CURTOS = {
+    "ano_lancamento": "ano de lancamento",
+    "ano_adicionado": "ano de entrada na Netflix",
+    "tem_diretor": "ter diretor",
+    "qtd_elenco": "atores no elenco",
+    "qtd_paises": "paises de producao",
+    "qtd_generos": "generos",
+}
+ORIGEM = {
+    "ano_lancamento": "coluna release_year",
+    "ano_adicionado": "ano da coluna date_added",
+    "tem_diretor": "1 se a coluna director esta preenchida",
+    "qtd_elenco": "nomes separados por virgula na coluna cast",
+    "qtd_paises": "paises separados por virgula na coluna country",
+    "qtd_generos": "generos separados por virgula na coluna listed_in",
+}
+
 st.title("Clusterizacao K-means")
 st.write("Agrupa os titulos por semelhanca e usa o metodo do cotovelo e a estatistica gap "
          "para escolher o numero de grupos (k).")
 
+with st.expander("Quais dados estao sendo usados", expanded=True):
+    st.write(f"Cada linha e um titulo da Netflix ({len(X_completo)} titulos do netflix_titles.csv, "
+             "sem os que nao tem data de entrada). Para cada titulo o K-means olha estas variaveis:")
+    st.dataframe(pd.DataFrame({
+        "Variavel": [NOMES[c] for c in X_completo.columns],
+        "Como foi calculada": [ORIGEM[c] for c in X_completo.columns],
+        "Faixa de valores": [f"{a} a {b}" for a, b in zip(X_completo.min(), X_completo.max())],
+        "Media": X_completo.mean().round(1).values,
+    }), hide_index=True)
+    st.caption("O tipo (Filme ou Serie) NAO entra no agrupamento: ele so aparece depois, para conferir os grupos.")
+
 st.sidebar.header("Parametros")
-variaveis = st.sidebar.multiselect("Variaveis", list(X_completo.columns), default=list(X_completo.columns))
+variaveis = st.sidebar.multiselect("Variaveis", list(X_completo.columns), default=list(X_completo.columns),
+                                   format_func=lambda c: NOMES[c])
 k_max = st.sidebar.slider("k maximo testado", 4, 15, 10)
 n_referencias = st.sidebar.slider("Simulacoes do gap (B)", 5, 30, 10, step=5)
 
@@ -94,74 +133,138 @@ def agrupar(variaveis, k):
 
 
 grupos = agrupar(tuple(variaveis), k_final)
-resumo = X.assign(grupo=grupos, tipo=y.loc[X.index].map({"Movie": "Filme", "TV Show": "Serie"}))
+resumo = X.assign(grupo=grupos, tipo=y.loc[X.index].map({"Movie": "Filme", "TV Show": "Serie"}),
+                  titulo=dados.loc[X.index, "title"])
+NOMES_GRUPOS = [f"Grupo {g}" for g in range(k_final)]
 
 perfil = resumo.groupby("grupo")[variaveis].mean().round(2)
-perfil.insert(0, "titulos", resumo["grupo"].value_counts().sort_index())
-perfil["% series"] = (resumo.groupby("grupo")["tipo"].apply(lambda t: (t == "Serie").mean()) * 100).round(1)
-st.write("Media de cada variavel por grupo:")
-st.dataframe(perfil)
+perfil.insert(0, "Titulos no grupo", resumo["grupo"].value_counts().sort_index())
+perfil["% que sao series"] = (resumo.groupby("grupo")["tipo"].apply(lambda t: (t == "Serie").mean()) * 100).round(1)
+perfil.index = NOMES_GRUPOS
+st.write("Media de cada variavel por grupo (o perfil de cada grupo):")
+st.dataframe(perfil.rename(columns=NOMES))
 
-if len(variaveis) >= 2:
-    vx = st.selectbox("Eixo X", variaveis, index=0)
-    vy = st.selectbox("Eixo Y", variaveis, index=min(len(variaveis) - 1, 3))
-    amostra = resumo.sample(min(2000, len(resumo)), random_state=42)
-    fig4, ax4 = plt.subplots(figsize=(10, 6))
-    cores = plt.get_cmap("tab10")
-    for g in sorted(amostra["grupo"].unique()):
-        pontos = amostra[amostra["grupo"] == g]
-        ax4.scatter(pontos[vx], pontos[vy], s=12, alpha=0.6, color=cores(g % 10), label=f"Grupo {g}")
-    ax4.set_xlabel(vx)
-    ax4.set_ylabel(vy)
-    ax4.legend()
-    plt.tight_layout()
-    st.pyplot(fig4)
+
+def tabela_pontos(amostra):
+    """Dados mostrados ao passar o mouse: nome do titulo, tipo e valores reais de cada variavel."""
+    tabela = pd.DataFrame({
+        "Titulo": amostra["titulo"].values,
+        "Tipo": amostra["tipo"].values,
+        "Grupo": "Grupo " + amostra["grupo"].astype(str).values,
+    })
+    for v in variaveis:
+        tabela[NOMES[v]] = amostra[v].values
+    return tabela
+
+
+def espalhar(valores, rng, tamanho=0.25):
+    # As variaveis sao numeros inteiros: sem um pequeno deslocamento os pontos ficariam empilhados
+    return valores + rng.uniform(-tamanho, tamanho, size=len(valores))
+
+
+def grafico_dispersao(tabela, eixos, titulos_eixos, altura):
+    funcao = px.scatter_3d if len(eixos) == 3 else px.scatter
+    argumentos = dict(zip(["x", "y", "z"], eixos))
+    fig = funcao(
+        tabela, **argumentos, color="Grupo", height=altura, opacity=0.7,
+        hover_name="Titulo", hover_data={c: True for c in ["Tipo"] + [NOMES[v] for v in variaveis]}
+        | {e: False for e in eixos},
+        category_orders={"Grupo": NOMES_GRUPOS},
+        color_discrete_sequence=px.colors.qualitative.T10,
+    )
+    if len(eixos) == 3:
+        fig.update_traces(marker_size=3)
+        fig.update_layout(scene=dict(xaxis_title=titulos_eixos[0], yaxis_title=titulos_eixos[1],
+                                     zaxis_title=titulos_eixos[2],
+                                     camera=dict(eye=dict(x=1.7, y=1.7, z=1.1))))
+    else:
+        fig.update_traces(marker_size=6)
+        fig.update_layout(xaxis_title=titulos_eixos[0], yaxis_title=titulos_eixos[1])
+    fig.update_layout(margin=dict(l=0, r=0, t=10, b=0), legend_itemsizing="constant",
+                      legend_title_text="Grupo (K-means)")
+    return fig
+
+
+st.subheader("Dispersao 2D")
+amostra = resumo.sample(min(2000, len(resumo)), random_state=42)
+c1, c2 = st.columns(2)
+vx = c1.selectbox("Eixo X (horizontal)", variaveis, index=0, format_func=lambda c: NOMES[c])
+vy = c2.selectbox("Eixo Y (vertical)", variaveis, index=min(len(variaveis) - 1, 3),
+                  format_func=lambda c: NOMES[c])
+st.caption(f"Cada ponto e um titulo ({len(amostra)} sorteados dos {len(resumo)}, para o grafico nao ficar pesado). "
+           "A cor e o grupo em que o K-means colocou o titulo. Passe o mouse num ponto para ver qual titulo e.")
+rng = np.random.default_rng(42)
+tabela2d = tabela_pontos(amostra)
+tabela2d["_x"] = espalhar(amostra[vx].values, rng)
+tabela2d["_y"] = espalhar(amostra[vy].values, rng)
+st.plotly_chart(grafico_dispersao(tabela2d, ["_x", "_y"], [NOMES[vx], NOMES[vy]], 500))
 
 st.subheader("Dispersao 3D")
 if len(variaveis) < 3:
     st.warning("Escolha pelo menos tres variaveis na barra lateral para ver o grafico 3D.")
 else:
-    modo = st.radio("Eixos do grafico", ["Componentes principais (PCA)", "Variaveis originais"],
+    modo = st.radio("O que vai nos eixos", ["Tres variaveis a escolha", "Resumo de todas as variaveis (PCA)"],
                     horizontal=True)
     amostra3d = resumo.sample(min(3000, len(resumo)), random_state=42)
+    tabela3d = tabela_pontos(amostra3d)
+    rng = np.random.default_rng(7)
 
-    if modo == "Variaveis originais":
+    if modo == "Tres variaveis a escolha":
         c1, c2, c3 = st.columns(3)
-        ex = c1.selectbox("Eixo X ", variaveis, index=0)
-        ey = c2.selectbox("Eixo Y ", variaveis, index=1)
-        ez = c3.selectbox("Eixo Z", variaveis, index=min(3, len(variaveis) - 1))
+        ex = c1.selectbox("Eixo X", variaveis, index=0, format_func=lambda c: NOMES[c])
+        ey = c2.selectbox("Eixo Y", variaveis, index=1, format_func=lambda c: NOMES[c])
+        ez = c3.selectbox("Eixo Z (altura)", variaveis, index=min(3, len(variaveis) - 1),
+                          format_func=lambda c: NOMES[c])
         if len({ex, ey, ez}) < 3:
             st.warning("Escolha tres variaveis diferentes.")
             ex, ey, ez = variaveis[:3]
-        # Pequeno deslocamento aleatorio: as variaveis sao inteiras e os pontos ficariam empilhados
-        ruido = np.random.default_rng(42).uniform(-0.25, 0.25, size=(len(amostra3d), 3))
-        pontos3d = pd.DataFrame({
-            ex: amostra3d[ex].values + ruido[:, 0],
-            ey: amostra3d[ey].values + ruido[:, 1],
-            ez: amostra3d[ez].values + ruido[:, 2],
-        })
-        eixos = [ex, ey, ez]
+        for eixo, v in zip(["_x", "_y", "_z"], [ex, ey, ez]):
+            tabela3d[eixo] = espalhar(amostra3d[v].values, rng)
+        titulos = [CURTOS[v][0].upper() + CURTOS[v][1:] for v in (ex, ey, ez)]
+        st.caption("Cada ponto e um titulo, posicionado pelos valores reais das tres variaveis escolhidas.")
     else:
-        # PCA resume todas as variaveis escolhidas em 3 eixos que explicam a maior parte da variacao
+        # PCA: cria 3 eixos novos, cada um uma combinacao das variaveis padronizadas
         pca = PCA(n_components=3, random_state=42).fit(Xp)
         componentes = pca.transform(Xp[resumo.index.get_indexer(amostra3d.index)])
         explicada = pca.explained_variance_ratio_
-        eixos = [f"PC{i + 1} ({explicada[i]:.0%})" for i in range(3)]
-        pontos3d = pd.DataFrame(componentes, columns=eixos)
-        st.caption(f"Os 3 componentes explicam {explicada.sum():.0%} da variacao dos dados.")
+        pesos = pd.DataFrame(pca.components_.T, index=variaveis, columns=["Eixo 1", "Eixo 2", "Eixo 3"])
 
-    pontos3d["Grupo"] = "Grupo " + amostra3d["grupo"].astype(str).values
-    pontos3d["Tipo"] = amostra3d["tipo"].values
-    fig5 = px.scatter_3d(
-        pontos3d, x=eixos[0], y=eixos[1], z=eixos[2], color="Grupo", hover_data=["Tipo"],
-        opacity=0.7, height=650,
-        category_orders={"Grupo": [f"Grupo {g}" for g in range(k_final)]},
-        color_discrete_sequence=px.colors.qualitative.T10,
-    )
-    fig5.update_traces(marker_size=3)
-    fig5.update_layout(margin=dict(l=0, r=0, t=10, b=0), legend_itemsizing="constant")
-    st.plotly_chart(fig5)
-    st.caption("Arraste para girar, use a roda do mouse para zoom e clique na legenda para esconder grupos.")
+        def descrever(coluna):
+            # As 3 variaveis com maior peso (positivo = cresce junto, negativo = cresce ao contrario)
+            principais = pesos[coluna].abs().sort_values(ascending=False).index[:3]
+            mais = [CURTOS[v] for v in principais if pesos.loc[v, coluna] > 0]
+            menos = [CURTOS[v] for v in principais if pesos.loc[v, coluna] < 0]
+            def juntar(itens):
+                return itens[0] if len(itens) == 1 else ", ".join(itens[:-1]) + " e " + itens[-1]
+
+            partes = []
+            if mais:
+                partes.append("mais " + juntar(mais))
+            if menos:
+                partes.append("menos " + juntar(menos))
+            return ", ".join(partes)
+
+        descricoes = [f"Eixo {i + 1}: {descrever(f'Eixo {i + 1}')}" for i in range(3)]
+        titulos = [f"Eixo {i + 1}" for i in range(3)]
+        for i, eixo in enumerate(["_x", "_y", "_z"]):
+            tabela3d[eixo] = componentes[:, i]
+
+        st.write(
+            "O PCA (Analise de Componentes Principais) junta as variaveis em 3 eixos novos. "
+            "Cada eixo e uma mistura das variaveis originais, e o numero no eixo nao tem unidade: "
+            "0 e o titulo medio, valores positivos e negativos indicam o quanto o titulo foge da media."
+        )
+        st.markdown("\n".join(
+            f"- **{descricoes[i]}** (resume {explicada[i]:.0%} da variacao dos dados)" for i in range(3)
+        ))
+        st.caption(f"Os 3 eixos juntos mostram {explicada.sum():.0%} da informacao das {len(variaveis)} variaveis. "
+                   "Na tabela abaixo, quanto maior o peso (positivo ou negativo), mais a variavel influencia o eixo.")
+        st.dataframe(pesos.rename(index=NOMES).style.format("{:.2f}")
+                     .background_gradient(cmap="RdBu", vmin=-1, vmax=1, axis=None))
+
+    st.plotly_chart(grafico_dispersao(tabela3d, ["_x", "_y", "_z"], titulos, 700))
+    st.caption("Arraste para girar, use a roda do mouse para zoom, passe o mouse num ponto para ver o titulo "
+               "e clique na legenda para esconder ou mostrar grupos.")
 
 st.write(
     f"Com as variaveis escolhidas, o cotovelo sugere k = {k_cotovelo}, a estatistica gap sugere "
